@@ -1,58 +1,42 @@
 ---
-title: "Untitled"
+title: "Tree water deficit: data exploration"
+author: Salomé Santos
 format: pdf
 ---
 
-```{r load_libraries}
-library(dplyr)
+```{r load_libraries, message = FALSE, warning = FALSE}
+require(dplyr)
+require(ggplot2)
+require(car)
+require(stringr)
+require(lubridate)
+require(zoo)
+#require(flextable)
+library(broom)
 library(ggplot2)
-library(car)
-library(stringr)
-library(lubridate)
+library(forecast)
 
-knitr::opts_chunk$set(fig.height=7) 
-```
-
-```{r read_files}
-tstoy04_series <- read.csv("tstoy04/tstoy04_series.csv")
-tstoy04_series$site.id <- 1:nrow(tstoy04_series)
-tstoy04_sites <- read.csv("tstoy04/tstoy04_sites.csv")
-
-list.ts.files <- list.files("tstoy04/SeparateSeries", full.names = TRUE)
-list.ts <- lapply(list.ts.files, read.csv)
-df.ts <- bind_rows(list.ts, .id = "site.id")
-
-df.ts.series <- merge(df.ts, tstoy04_series)
-```
-
-
-```{r add_time_variables}
-df.ts.series <- df.ts.series %>%
-  group_by(site.id) %>%
-  mutate(
-    year =  substr(ts, 1, 4),
-    ts = as.Date(ts),
-    diff.ts = ts - lag(ts),
-    diff.days = as.numeric(diff.ts, units = 'days'),
-    diff.days = ifelse(is.na(diff.days), 0, diff.days),
-    cum.time.days = cumsum(diff.days),
-    day.of.year =  yday(ts),
-    month = month(ts)
-)
-
-first.time.point <- df.ts.series %>%
-  group_by(site.id) %>%
-  slice(1) %>%
-  pull(ts)
-all(first.time.point == "2020-01-01")
+knitr::opts_chunk$set(fig.width=7, fig.height=7) 
 ```
 
 ```{r}
+bool_run_dataset <- TRUE
 
-plot_basic <- ggplot(df.ts.series, aes(x = cum.time.days, y = twd, group = site.id)) +
-  geom_line(aes(color = site.id)) +
+if(bool_run_dataset){source("read.datasets.r")
+  } else {
+  df.ts.series2 <- read.csv("df.ts.series2.csv")
+  num.cols <- c("twd", "pr", "at", "ws", "dp", "sr", "lr", "day.of.year")
+  }
+``` 
+
+
+```{r fig.height = 10}
+
+plot_basic <- ggplot(df.ts.series2, aes(x = cum.time.days, y = twd, group = tree.id)) +
+  geom_line(aes(color = tree.id)) +
   theme_bw() +
-  theme(legend.position='bottom')
+  theme(legend.position='bottom') +
+  guides(color = guide_legend(nrow = 3))
 
 plot_basic +
   facet_grid(vars(species), vars(site))
@@ -63,9 +47,9 @@ plot_basic +
   facet_wrap(~species)
 
 ggplot(
-  df.ts.series,
+  df.ts.series2,
   aes(x = day.of.year, y = twd,
-  group = interaction(year, site.id))) +
+  group = interaction(year, tree.id))) +
   geom_line(aes(color = year)) +
   facet_wrap(~species) +
   theme(legend.position='bottom')
@@ -73,51 +57,108 @@ ggplot(
 
 ```{r}
 
-cor(df.ts.series$twd, df.ts.series$at)
-cor(df.ts.series$twd, df.ts.series$day.of.year)
-#cor(df.ts.series$twd, df.ts.series$year)
+#lapply(df.ts.series2, class)
 
-lapply(df.ts.series, class)
-num.cols <- c("twd", "pr", "at", "ws", "dp", "sr", "lr", "day.of.year")
-num.vars.df <- df.ts.series[,num.cols]
+num.vars.df <- df.ts.series2[,num.cols]
 cor_matrix <- cor(num.vars.df, use = "complete.obs")
+#flextable(cor_matrix)
 cor_matrix
-
 #pairs(num.vars.df)
+```
+
+```{r corr_by_species}
+list_species <- unique(df.ts.series2$species)
+
+for(iter_species in list_species){
+  iter_df <- df.ts.series2 %>%
+    filter(species == iter_species)
+
+  print(iter_species)
+  print(cor(iter_df[,num.cols]))
+}
 ```
 
 ```{r}
 ggplot(
-  df.ts.series,
+  df.ts.series2,
   aes(x = at, y = twd,
-  group = interaction(year, site.id))) +
+  group = interaction(year, tree.id))) +
   geom_point(aes(color = year)) +
   facet_wrap(~species) +
   theme(legend.position='bottom')
 ``` 
 
-```{r}
-
-library(zoo)
-
-df.ts.series <- df.ts.series %>%
-  mutate(
-    TWD_rolling7 = rollmean(twd, k = 7, fill = NA, align = "right")
-  )
+```{r fig.height = 10}
+ggplot(
+  df.ts.series2,
+  aes(x = ts, y = twd_rolling7,
+  group = interaction(year, tree.id))) +
+  geom_line(aes(color = year)) +
+  facet_wrap(~species) +
+  theme(legend.position='bottom')
 
 ggplot(
-  df.ts.series,
-  aes(x = ts, y = TWD_rolling7,
-  group = interaction(year, site.id))) +
+  df.ts.series2,
+  aes(x = ts, y = twd_rolling30,
+  group = interaction(year, tree.id))) +
+  geom_line(aes(color = year)) +
+  #geom_point(aes(color = year), size = 1)+
+  facet_wrap(~species) +
+  theme(legend.position='bottom')
+
+ggplot(
+  df.ts.series2,
+  aes(x = at_rolling30, y = twd_rolling30,
+  group = interaction(year, tree.id))) +
   geom_point(aes(color = year)) +
   facet_wrap(~species) +
   theme(legend.position='bottom')
 
-acf(df.ts.series$twd, lag.max = 500)
+ggplot(
+  df.ts.series2,
+  aes(x = pr_rolling30, y = twd_rolling30,
+  group = interaction(year, tree.id))) +
+  geom_point(aes(color = year)) +
+  facet_wrap(~species) +
+  theme(legend.position='bottom')  
+
+acf(df.ts.series2$twd, lag.max = 500)
 # clear cycl because high correlation again at 365 days
 
-acf(df.ts.series$at, lag.max = 500)
+acf(df.ts.series2$at, lag.max = 500)
 ```
+
+```{r corr_by_species_rolling7}
+rolling.cols <- paste0(num.cols, "_rolling7")
+
+for(iter_species in list_species){
+  iter_df <- df.ts.series2 %>%
+    filter(species == iter_species)
+
+  print(iter_species)
+  print(cor(iter_df[,rolling.cols], use = "complete.obs"))
+}
+```
+
+```{r corr_by_species_rolling30}
+rolling.cols <- paste0(num.cols, "_rolling30")
+
+for(iter_species in list_species){
+  iter_df <- df.ts.series2 %>%
+    filter(species == iter_species)
+
+  print(iter_species)
+  print(cor(iter_df[,rolling.cols], use = "complete.obs"))
+}
+```
+
+## Partial Autocorrelation
+```{r}
+# Plot PACF
+ggPacf(df.ts.series2$twd)
+ggPacf(df.ts.series2$twd_rolling30)
+```
+
 
 ```{r}
 plot_twd_lag <- function(df, x_col, twd_col, lag = 1) {
@@ -130,7 +171,7 @@ plot_twd_lag <- function(df, x_col, twd_col, lag = 1) {
     mutate(Lagged_TWD = lag(.data[[twd_col]], lag))
 
   # Plot TWD vs. lagged TWD
-  ggplot(df, aes(x = ts, color = site.id, y = .data[[twd_col]])) +
+  ggplot(df, aes(x = ts, color = tree.id, y = .data[[twd_col]])) +
     geom_line() +
     geom_line(aes(y= Lagged_TWD))+
     labs(title = paste("Tree Water Deficit vs. Lagged TWD (Lag =", lag, ")"),
@@ -140,7 +181,190 @@ plot_twd_lag <- function(df, x_col, twd_col, lag = 1) {
     facet_wrap(~species)
 }
 
-plot_twd_lag(df.ts.series, "at", "twd", lag = 5)
+plot_twd_lag(df.ts.series2, "at", "twd", lag = 5)
+
+```
+
+# Granger Causality
+
+Granger Causality: Rather than testing whether X causes Y, the Granger causality tests whether X forecasts Y. 
+
+A time series X is said to Granger-cause Y if it can be shown, usually through a series of t-tests and F-tests on lagged values of X (and with lagged values of Y also included), that those X values provide statistically significant information about future values of Y. 
+
+A variable X that evolves over time Granger-causes another evolving variable Y if predictions of the value of Y based on its own past values and on the past values of X are better than predictions of Y based only on Y's own past values.  
+
+If the variables are non-stationary, then the test is done using first (or higher) differences. The number of lags to be included is usually chosen using an information criterion
 
 
+```{r message = FALSE, warning = FALSE}
+library(vars)
+library(urca)
+library(vars)
+
+summary(ur.df(df.ts.series2$twd, type="drift", lags=2))
+summary(ur.df(df.ts.series2$at, type="drift", lags=2))
+```
+
+This tests the null hypothesis: The series has a unit root (i.e., non-stationary).
+
+If the coefficient on z.lag.1 is significantly different from zero (with a very small p-value), then you can reject the null hypothesis and conclude the series is stationary.
+
+```{r}
+
+granger_test <- function(data, group = NA, x_col, y_col, lags = 10) {
+  run_test <- function(df_sub) {
+    df <- df_sub[, c(x_col, y_col)]
+    names(df) <- c("x", "y")
+    df <- df[complete.cases(df), ]
+    
+    if (nrow(df) <= lags + 1) {
+      return("Not enough observations for VAR model.")
+    }
+    
+    var_model <- VAR(df, p = lags, type = "const")
+    return(causality(var_model, cause = "x"))
+  }
+  
+  if (is.na(group)) {
+    return(run_test(data))
+  } else {
+    group_list <- split(data, data[[group]])
+    results <- lapply(group_list, run_test)
+    return(results)
+  }
+}
+
+granger_test(df.ts.series2, y_col= "twd", x_col= "at")
+granger_test(df.ts.series2, y_col = "twd", x_col= "dp")
+
+```
+
+## Granger test by species
+
+```{r}
+granger_test(df.ts.series2, y_col= "twd", x_col= "at", group = "species")
+```
+
+## Linear regression
+
+```{r}
+plot_coeffs <- function(my_coef_df){
+  ggplot(my_coef_df, aes(x = reorder(term, estimate), y = estimate)) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    geom_errorbar(aes(ymin = estimate - std.error, ymax = estimate + std.error), width = 0.2) +
+    coord_flip() +  # flip axes for readability
+    labs(
+      title = "Linear Model Coefficients",
+      x = "Predictor",
+      y = "Estimate"
+    ) +
+    theme_minimal()
+}
+```
+
+```{r}
+lm_fit <- lm(
+  formula = twd ~ cum.time.days +  at + dp + pr + ws + sr + lr,
+  data = df.ts.series2
+)
+
+summary(lm_fit)
+coef_df <- tidy(lm_fit)  # gets estimate, std.error, etc.
+plot_coeffs(coef_df)
+```  
+
+```{r}
+lm_fit <- lm(
+  formula = twd ~ cum.time.days + at + dp + pr + ws + sr + lr,
+  data = df.ts.series2,
+  subset = species %in% c("Picea abies")
+)
+
+summary(lm_fit)
+coef_df <- tidy(lm_fit)  # gets estimate, std.error, etc.
+plot_coeffs(coef_df)
+```  
+
+```{r}
+lm_fit <- lm(
+  formula = twd ~ cum.time.days +  at + dp + pr + ws + sr + lr,
+  data = df.ts.series2,
+  subset = species %in% c("Fagus sylvatica")
+)
+
+summary(lm_fit)
+coef_df <- tidy(lm_fit)  # gets estimate, std.error, etc.
+plot_coeffs(coef_df)
+```
+
+
+# Rollins SD
+
+Confirm that timeseries are not stationary
+
+```{r fig.height =10}
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(broom)
+library(tidyr)
+library(ggplot2)
+
+# Nest data by tree.id
+nested <- df.ts.series2 %>%
+  group_by(tree.id) %>%
+  nest()
+
+# Fit model and extract residuals
+residuals_by_tree <- nested %>%
+  mutate(
+    model = map(data, ~ lm(twd ~ cum.time.days, data = .x)),
+    augmented = map(model, augment)
+  ) %>%
+  unnest(augmented)
+
+residuals_by_tree_p1 <- residuals_by_tree %>% 
+  filter(tree.id < 22)
+residuals_by_tree_p2 <- residuals_by_tree %>% 
+  filter(tree.id > 21)
+
+plot_residuals <- function(df){
+  # Plot residuals vs fitted for each tree
+  print(ggplot(df, aes(.fitted, .resid)) +
+    geom_point(alpha = 0.6) +
+    geom_hline(yintercept = 0, color = "red") +
+    facet_wrap(~ tree.id, scales = "free", ncol = 4) +
+    labs(x = "Fitted values", y = "Residuals",
+        title = "Residuals vs Fitted Values for Each Tree ID") +
+    theme_minimal())
+
+  print(ggplot(df, aes(x = cum.time.days, y = .resid)) +
+    geom_point(alpha = 0.6) +
+    geom_hline(yintercept = 0, color = "red") +
+    facet_wrap(~ tree.id, scales = "free", ncol = 4) +
+    labs(x = "Cumulative Time (days)", y = "Residuals",
+        title = "Residuals vs. Cumulative Time by Tree ID") +
+    theme_minimal())
+}
+
+plot_residuals(residuals_by_tree_p1)
+plot_residuals(residuals_by_tree_p2)
+
+# Step 1: Fit a linear model for each tree
+coeffs_by_tree <- df.ts.series2 %>%
+  group_by(tree.id) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(twd ~ cum.time.days, data = .x)),
+    coef = map(model, tidy)
+  ) %>%
+  unnest(coef)
+
+# Step 2: Plot coefficients
+ggplot(coeffs_by_tree, aes(x = tree.id, y = estimate, fill = term)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(x = "Tree ID", y = "Coefficient Estimate", fill = "Term",
+       title = "Linear Model Coefficients by Tree ID") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90))
 ```

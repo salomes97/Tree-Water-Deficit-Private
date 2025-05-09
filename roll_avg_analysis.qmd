@@ -1,0 +1,74 @@
+---
+title: "30 day rolling average analysis"
+format: pdf
+---
+
+```{r}
+library(ggplot2)
+library(mgcv)
+library(dplyr)
+
+df.ts.series2 <- read.csv("df.ts.series2.csv") %>% 
+  filter(!species == "Pseudotsuga menziesii")
+num.cols <- c("twd", "pr", "at", "ws", "dp", "sr", "lr", "day.of.year")
+``` 
+
+```{r}
+rolling_avg_cols <- colnames(df.ts.series2)[grep("_rolling30", colnames(df.ts.series2))]
+
+rolling_avg_cols <- rolling_avg_cols[!rolling_avg_cols =="day.of.year_rolling30"]
+
+print_time_ycol <- function(ycol){
+  ggplot(
+    df.ts.series2,
+    aes(x = cum.time.days, color = year, group = interaction(year, tree.id))) +
+    geom_line(aes_string(y = ycol)) +
+    #geom_point(aes(color = year), size = 1)+
+    facet_wrap(~species) +
+    theme(legend.position='bottom')
+}
+``` 
+
+```{r fig.height = 6}
+lapply(rolling_avg_cols, print_time_ycol)
+``` 
+
+```{r}
+rolling_avg_cols
+df.ts.series2$year <- factor(df.ts.series2$year)
+gam_model <- gam(twd_rolling30 ~ s(cum.time.days) +  s(pr_rolling30) + s(at_rolling30) + s(ws_rolling30) + s(dp_rolling30) + s(sr_rolling30) + s(lr_rolling30) + year + species, data = df.ts.series2)
+```
+
+#  Partial effect plots of fitted Generalized Additive Model (GAM)
+
+```{r fig.height = 10}
+anova(gam_model)
+summary(gam_model)
+plot(gam_model, pages = 1, se = TRUE)
+``` 
+
+General structure of each plot:
+
+- X-axis: The values of the predictor variable (e.g., pr_rolling30, at_rolling30, etc.).
+
+- Y-axis: The smooth effect f(x) of the predictor on the response. This is not the raw coefficient, but the estimated non-linear transformation.
+
+- Black line: Estimated smooth function.
+
+- Dashed lines: Confidence intervals (usually 95%).
+
+Individual variable interpretations:
+
+pr_rolling30 (precipitation?): Effect is fairly flat → very little to no influence on the response in this range.
+
+at_rolling30 (air temperature?): U-shaped effect → lower values are associated with higher outcomes, middle values suppress it, and higher values raise it again.
+
+ws_rolling30 (wind speed?): Slightly declining influence, but very flat → weak or no effect overall.
+
+dp_rolling30 (dew point?): Positive effect when very low, then peaks and slightly drops → might indicate an optimal dew point range.
+
+sr_rolling30 (solar radiation?): Flat and near-zero → suggests solar radiation has little effect on the response.
+
+lr_rolling30 (longwave radiation?): Slight decline → higher values may slightly decrease the response.
+
+
