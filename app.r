@@ -27,7 +27,7 @@ df_twd <- df_twd %>%
     across(
       all_of(num_cols),
       ~ mean(.x, na.rm = TRUE),
-      .names = "{col}_month_avg"
+      .names = "{col}_week_avg"
     )
   )
 
@@ -224,7 +224,7 @@ server <- function(input, output) {
     req(input$columns)  # Ensure at least one column is selected
     
     map_outputs <- lapply(input$columns, function(col) {
-      avg_col <- paste0(col, "_month_avg")
+      avg_col <- paste0(col, "_week_avg")
       renderLeaflet({
         data <- datasetYearWeekInput()
         
