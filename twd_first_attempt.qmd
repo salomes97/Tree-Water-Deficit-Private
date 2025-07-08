@@ -234,8 +234,8 @@ granger_test <- function(data, group = NA, x_col, y_col, lags = 10) {
   }
 }
 
-granger_test(df.ts.series2, y_col= "twd", x_col= "at")
-granger_test(df.ts.series2, y_col = "twd", x_col= "dp")
+granger_test(df.ts.series2, y_col= "twd", x_col= "at", group = "tree.id")
+granger_test(df.ts.series2, y_col = "twd", x_col= "dp", group = "tree.id")
 
 ```
 
