@@ -15,6 +15,11 @@ require(zoo)
 library(broom)
 library(ggplot2)
 library(forecast)
+library(RColorBrewer)
+library(purrr)
+library(tidyr)
+library(broom)
+library(gridExtra)
 
 knitr::opts_chunk$set(fig.width=7, fig.height=7) 
 ```
@@ -27,24 +32,161 @@ if(bool_run_dataset){source("read.datasets.r")
   df.ts.series2 <- read.csv("df.ts.series2.csv")
   num.cols <- c("twd", "pr", "at", "ws", "dp", "sr", "lr", "day.of.year")
   }
+df.ts.series2$tree_index <- as.factor(df.ts.series2$tree_index)
 ``` 
 
 
 ```{r fig.height = 10}
+# for the report
 
-plot_basic <- ggplot(df.ts.series2, aes(x = cum.time.days, y = twd, group = tree.id)) +
-  geom_line(aes(color = tree.id)) +
-  theme_bw() +
-  theme(legend.position='bottom') +
-  guides(color = guide_legend(nrow = 3))
+ # Pick one random tree from df_plot_fagus
+set.seed(123) # for reproducibility
+species1_tree_ids <- unique(df.ts.series$tree.id[df.ts.series$species == "Carpinus betulus"])
+random_tree_id_species1 <- sample(species1_tree_ids, 1)
+
+species2_tree_ids <- unique(df.ts.series$tree.id[df.ts.series$species == "Picea abies"])
+random_tree_id_species2 <- sample(species2_tree_ids, 1)
+
+df_plot_certain_species <- df.ts.series %>%
+  filter(tree.id %in% c(random_tree_id_species1, random_tree_id_species2 )) %>%
+  group_by(tree.id) %>%
+  mutate(
+    across(
+      c(twd, at, pr, lr, sr, ws, dp),
+      ~ (. - mean(., na.rm = TRUE)) / sd(., na.rm = TRUE)
+    )
+  )
+
+year_marks <- c(0, 366, 731, 1096) # 2020 is a leap year
+xlab <- "Cumulative Time (days)"
+
+get_plot_twd_and_covariate <- function(df, my_covariate) {
+  
+  p <- ggplot(df, aes(x = cum.time.days)) +
+    geom_line(aes(y = twd), color = "#00008B") +
+    geom_line(aes_string(y = my_covariate), alpha = 0.5, color = "red") +
+    geom_vline(xintercept = year_marks, linetype = "dotted") +
+    facet_wrap(~ species, ncol = 2) +
+    theme_bw() +
+    labs(
+      x = xlab,
+      y = paste("Standardized Values of TWD (dark blue) and", toupper(my_covariate), "(red)"),
+      color = "Variable"
+    ) +
+    theme(legend.position = "bottom")
+  
+  return(p)
+}
+
+time_vs_twd_at <- get_plot_twd_and_covariate(df_plot_certain_species, my_covariate = "at")
+ggsave("images for report/time_vs_twd_at.png", plot = time_vs_twd_at, width = 10, height = 5)
+time_vs_twd_pr <- get_plot_twd_and_covariate(df_plot_certain_species, my_covariate = "pr")
+ggsave("images for report/time_vs_twd_pr.png", plot = time_vs_twd_pr, width = 10, height = 5)
+
+vec_covariates <- c("at", "pr", "lr", "sr", "ws", "dp")
+
+for(iter_cov in vec_covariates) {
+  get_plot_twd_and_covariate(df_plot_certain_species, my_covariate = iter_cov)
+  ggsave(filename = paste0("images for report/time_vs_twd_", iter_cov, ".png"), width = 10, height = 5)
+}
+```
+
+```{r create_season_bands}
+
+# Summer = Jun 1 (DOY 152) to Aug 31 (DOY 243)
+summer_doy <- c(152, 243)
+
+# Winter = Dec 1 (DOY 335) to Dec 31 (365), AND Jan 1 (1) to Feb 28/29 (59)
+winter1_doy <- c(335, 365)  # Dec
+winter2_doy <- c(1,   59)   # Jan–Feb
+
+# If cum.time.days starts at 0
+origin_shift <- 0
+min(df.ts.series2$cum.time.days)
+
+# X range in your data
+xr <- range(df.ts.series2.plot$cum.time.days, na.rm = TRUE)
+
+# Ensure year_marks cover the whole range (add end mark if needed)
+ym <- sort(unique(year_marks))
+if (max(ym) < xr[2]) ym <- c(ym, ceiling(xr[2] / 365) * 365)
+
+# Helper to make one band given a year's start
+make_band <- function(y0, doy) {
+  tibble(
+    xmin = y0 + (doy[1] - 1 + origin_shift),
+    xmax = y0 + (doy[2] - 1 + origin_shift)
+  )
+}
+
+# Build bands for each year segment
+bands <- bind_rows(lapply(ym, function(y0) {
+  # Summer (single span within the year)
+  s <- make_band(y0, summer_doy) %>% mutate(season = "Summer")
+
+  # Winter spans two chunks: Dec (within this year) + Jan–Feb (at next year's start)
+  w_dec <- make_band(y0, winter1_doy) %>% mutate(season = "Winter")
+  w_jf  <- make_band(y0 + 365, winter2_doy) %>% mutate(season = "Winter")
+
+  bind_rows(s, w_dec, w_jf)
+})) %>%
+  # Keep only bands overlapping the plotting range
+  filter(xmax >= xr[1], xmin <= xr[2])
+
+write.csv(bands, "bands_seasonal.csv", row.names = FALSE)
+
+```
+
+```{r fig.height = 10}
+
+nb_indexes <- length(unique( df.ts.series2$tree_index))
+
+vec1 <- brewer.pal(n = 12, name = "Paired")
+vec2 <- brewer.pal(n = nb_indexes-12, name = "Paired")
+vec_color <- c(vec1, vec2)
+
+df.Pseudotsuga <- df.ts.series2 %>%
+  filter(species == "Pseudotsuga menziesii")
+df.ts.series2 <- setdiff(df.ts.series2, df.Pseudotsuga)
+
+get_plot_basic <-  function(my_df){
+  plot_basic <- ggplot(my_df, aes(x = cum.time.days, y = twd, group = tree.id)) +
+    geom_line(aes(color = tree_index)) +
+    theme_bw() +
+    theme(legend.position='none') +
+    guides(color = guide_legend(nrow = 3)) +
+    labs(
+      x = xlab, y= "TWD (mm)",
+      color = "Tree index within each species") +
+    scale_color_manual(values = vec_color)
+}
+plot_basic <- get_plot_basic(df.ts.series2)
 
 plot_basic +
   facet_grid(vars(species), vars(site))
 
-plot_basic +
-  geom_vline(xintercept = 365, color = "blue") +
-  geom_vline(xintercept = 730, color = "blue") +
-  facet_wrap(~species)
+add_details  <-  function(my_plot){
+  my_plot +
+    geom_vline(xintercept = year_marks, linetype = "dotted") +
+    geom_rect(
+      data = bands,
+      aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = season),
+      inherit.aes = FALSE, alpha = 0.12
+    ) +
+    scale_fill_manual(values = c(Winter = "grey50", Summer = "goldenrod")) +
+    facet_wrap(~species, ncol = 2) 
+}
+plot_time_twd_by_species <- add_details(plot_basic )
+
+ggsave(
+  filename= "images for report/plot_time_twd_by_species.png", 
+  plot= plot_time_twd_by_species, height = 10, width = 8) 
+
+
+plot_Pseudotsuga <- add_details(get_plot_basic(df.Pseudotsuga))
+ggsave(
+  filename= "images for report/plot_time_twd_Pseudotsuga.png", 
+  plot= plot_Pseudotsuga, height = 5, width = 7) 
 
 ggplot(
   df.ts.series2,
@@ -53,6 +195,20 @@ ggplot(
   geom_line(aes(color = year)) +
   facet_wrap(~species) +
   theme(legend.position='bottom')
+```
+
+```{r}
+
+df_long <- df.ts.series2 %>%
+  select(all_of(c(vec_covariates, "twd"))) %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "value")
+
+hist_unprocessed_vars <- ggplot(df_long, aes(x = value)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white", alpha = 0.7) +
+  facet_wrap(~ variable, scales = "free", ncol =2) +
+  theme_bw() +
+  labs( x = "Value", y = "Count")
+ggsave("images for report/hist_unprocessed_vars.png", plot = hist_unprocessed_vars, width = 8, height = 10)  
 ```
 
 ```{r}
@@ -122,10 +278,80 @@ ggplot(
   facet_wrap(~species) +
   theme(legend.position='bottom')  
 
-acf(df.ts.series2$twd, lag.max = 500)
-# clear cycl because high correlation again at 365 days
+```
 
-acf(df.ts.series2$at, lag.max = 500)
+Missing values
+
+```{r}
+# Check which rows have missing TWD values
+missing_twd_rows <- which(is.na(df.ts.series2$twd))
+cat("Number of missing TWD values:", length(missing_twd_rows), "\n")
+df.ts.series2 %>%
+  filter(is.na(twd)) %>%
+  select(tree.id, species) %>%
+  distinct() 
+df.ts.series2 <- df.ts.series2 %>% filter(!is.na(twd))
+```
+
+ACF
+
+```{r}
+unique_tree_ids <- unique(df.ts.series2$tree.id)
+
+# Save ACF results for later plotting
+get_acf <- function(tid, y_val = "twd") {
+  ts_data <- df.ts.series2 %>% filter(tree.id == tid)
+  acf_obj <- acf(ts_data[[y_val]], lag.max = 2000, plot = FALSE)
+
+  df <- tibble(
+    tree_index = unique(ts_data$tree_index),
+    species= unique(ts_data$species),
+    tree.id = tid,
+    lag = acf_obj$lag[,1,1],
+    acf = acf_obj$acf[,1,1]
+  ) %>%
+    filter(lag > 0)  # Exclude lag 0
+   return(df)   
+}
+
+plot_corr_plots <- function(my_df, my_y_val = "acf", add_smooth = TRUE) {
+
+  if(add_smooth){alpha = 0.5} else {alpha = 0.7}
+
+  cacf_plot <- ggplot(
+    my_df, 
+    aes(x = lag, y = .data[[my_y_val]], color = tree_index)) +
+      geom_point(alpha = alpha, size = 0.5, shape = 1) 
+
+  if (add_smooth) {
+    cacf_plot <- cacf_plot +
+      geom_smooth(se = FALSE, size = 1, method = "loess", span = 0.1)
+  } else {
+    cacf_plot <- cacf_plot + geom_line(alpha = 0.5)
+  }
+  cacf_plot <- cacf_plot +
+    theme_bw() +
+    geom_hline(yintercept = 0) +
+    scale_color_manual(values = vec_color) +
+    facet_wrap(~ species, ncol = 2) +
+    geom_vline(xintercept = year_marks, linetype = "dotted") +
+    labs(
+      #title = "Auto Correlation Function of TWD by Tree", 
+      x = "Lag", y = toupper(my_y_val)) +
+    theme(legend.position = "none")
+
+}
+
+# raw data
+acf_data_list <- map(unique_tree_ids, get_acf)
+acf_data <- bind_rows(acf_data_list)
+
+acf_plot_by_species <- plot_corr_plots(my_df = acf_data)
+ggsave(
+  "images for report/acf_twd_by_species.png",
+  plot = acf_plot_by_species, width = 10, height = 10
+)
+
 ```
 
 ```{r corr_by_species_rolling7}
@@ -155,8 +381,30 @@ for(iter_species in list_species){
 ## Partial Autocorrelation
 ```{r}
 # Plot PACF
-ggPacf(df.ts.series2$twd)
-ggPacf(df.ts.series2$twd_rolling30)
+get_pacf <- function(tid, y_val = "twd") {
+  ts_data <- df.ts.series2 %>% filter(tree.id == tid)
+  pacf_obj <- pacf(ts_data[[y_val]], lag.max = 2000, plot = FALSE)
+  df <- tibble(
+    tree_index = unique(ts_data$tree_index),
+    species= unique(ts_data$species),
+    tree.id = tid,
+    lag = pacf_obj$lag[,1,1],
+    pacf = pacf_obj$acf[,1,1]
+  ) %>%
+    filter(lag > 0)  # Exclude lag 0
+  return(df)  
+}
+pacf_data_list <- map(unique_tree_ids, get_pacf)
+pacf_data <- bind_rows(pacf_data_list)
+pacf_plot_by_species <- plot_corr_plots(my_df = pacf_data, my_y_val = "pacf")
+
+last_lag <- 100
+pacf_plot_by_species_zoomed <- plot_corr_plots(pacf_data %>% filter(lag < last_lag), my_y_val = "pacf", add_smooth = FALSE) +
+  coord_cartesian(xlim = c(0, last_lag))  # Zoom in on first 100 lags
+ggsave(
+  "images for report/pacf_twd_by_species_zoom.png",
+  plot = pacf_plot_by_species_zoomed, width = 10, height = 10
+)
 ```
 
 
@@ -185,6 +433,46 @@ plot_twd_lag(df.ts.series2, "at", "twd", lag = 5)
 
 ```
 
+
+# Lagged correlation
+
+```{r}
+# Compute lagged correlation between variables and TWD
+compute_lagged_corr <- function(df, var, twd_col = "twd", max_lag = 30) {
+  map_dfr(1:max_lag, function(lag_val) {
+    df_lagged <- df %>%
+      mutate(var_lagged = lag(.data[[var]], lag_val)) %>%
+      filter(!is.na(var_lagged), !is.na(.data[[twd_col]]))
+    cor_val <- cor(df_lagged[[twd_col]], df_lagged$var_lagged, use = "complete.obs")
+    tibble(variable = var, lag = lag_val, correlation = cor_val)
+  })
+}
+
+#vec_covariates_short <- c("at_rolling30", "pr_rolling30")
+vec_covariates_short <- c("at_rolling30")
+
+# Compute lagged correlation by tree.id
+lagged_corr_by_tree <- map_dfr(unique(df.ts.series2$tree.id), function(tid) {
+  df_tree <- df.ts.series2 %>% filter(tree.id == tid)
+  map_dfr(vec_covariates_short, ~ compute_lagged_corr(df_tree, .x, "twd_rolling30", max_lag = 100) %>%
+            mutate(tree.id = tid))
+})
+# Add species information to lagged_corr_by_tree
+lagged_corr_by_tree <- lagged_corr_by_tree %>%
+  left_join(df.ts.series2 %>% select(tree.id, species) %>% distinct(), by = "tree.id")
+# Plot lagged correlations by tree
+ggplot(lagged_corr_by_tree, aes(x = lag, y = correlation, color = tree.id)) +
+  geom_line(size = 0.8) +
+  facet_wrap(~ species, scales = "free_y") +
+  theme_bw() +
+  labs(title = "Lagged Correlation between Covariates and TWD by Tree",
+       x = "Lag (days)", y = "Correlation") +
+  theme(legend.position = "bottom")
+
+```
+
+
+
 # Granger Causality
 
 Granger Causality: Rather than testing whether X causes Y, the Granger causality tests whether X forecasts Y. 
@@ -193,23 +481,62 @@ A time series X is said to Granger-cause Y if it can be shown, usually through a
 
 A variable X that evolves over time Granger-causes another evolving variable Y if predictions of the value of Y based on its own past values and on the past values of X are better than predictions of Y based only on Y's own past values.  
 
-If the variables are non-stationary, then the test is done using first (or higher) differences. The number of lags to be included is usually chosen using an information criterion
+# Test for stationarity
 
+If the variables are non-stationary, then the test is done using first (or higher) differences. The number of lags to be included is usually chosen using an information criterion
 
 ```{r message = FALSE, warning = FALSE}
 library(vars)
 library(urca)
-library(vars)
 
-summary(ur.df(df.ts.series2$twd, type="drift", lags=2))
-summary(ur.df(df.ts.series2$at, type="drift", lags=2))
+summary(ur.df(df.ts.series2$rolling30, type="drift", lags=2))
+
+length(is.na(df.ts.series2$at_rolling30))/(40*30)
+length(is.na(df.ts.series2$twd_rolling30))/(40*30)
+
+
+# Test stationarity for at_rolling30 by tree.id
+list_trees <- unique(df.ts.series2$tree.id)[1:3]
+for (tid in list_trees) {
+  cat("\nTree ID:", tid, "\n")
+  sub_df <- df.ts.series2 %>% 
+    filter(tree.id == tid) %>% 
+    filter(!is.na(at_rolling30))
+
+  print(summary(ur.df(sub_df$at_rolling30, type = "drift", lags = 2)))
+  print(ggplot(sub_df, aes(x = ts, y = at_rolling30)) +
+    geom_line() +
+    labs(title = paste("Time Series of at_rolling30 for Tree ID", tid),
+         x = "Time", y = "at_rolling30") +
+    theme_minimal() +
+    theme(legend.position = "none"))
+}
+
+
 ```
+
+Stationarity vs. seasonality
+
+Stationarity requires constant mean and variance over time.
+
+But in practice, deterministic seasonality violates this visually, because the mean changes with the time of year.
+
+The ADF test does not explicitly model seasonal cycles, so it may flag the residual series as stationary even when the seasonality is strong.
+
+Interpretation for your case:
+The ADF test results indicate that the smoothed air temperature series does not have a stochastic trend (no random walk component), but the plot shows deterministic seasonal structure. That means the series is trend-stationary with strong seasonality, not strictly stationary in the sense of having a constant mean.
+
+For your report, you could phrase it like this:
+Although the Augmented Dickey–Fuller test strongly rejects the null of a unit root, indicating statistical stationarity, the rolling temperature series clearly exhibits deterministic seasonal cycles. This highlights that the test detects absence of stochastic trends, but does not remove or account for seasonality, which must be handled explicitly in modeling.
 
 This tests the null hypothesis: The series has a unit root (i.e., non-stationary).
 
 If the coefficient on z.lag.1 is significantly different from zero (with a very small p-value), then you can reject the null hypothesis and conclude the series is stationary.
 
-```{r}
+# Granger
+
+
+```{r run_granger_causality}
 
 granger_test <- function(data, group = NA, x_col, y_col, lags = 10) {
   run_test <- function(df_sub) {
@@ -234,9 +561,49 @@ granger_test <- function(data, group = NA, x_col, y_col, lags = 10) {
   }
 }
 
-granger_test(df.ts.series2, y_col= "twd", x_col= "at", group = "tree.id")
-granger_test(df.ts.series2, y_col = "twd", x_col= "dp", group = "tree.id")
+granger_results <- list()
+vec_covariates_roll <- paste0(vec_covariates, "_rolling30")
+for(iter_covariate in vec_covariates_roll){
+  granger_results[[iter_covariate]] <- granger_test(df.ts.series2, y_col= "twd_rolling30", x_col= iter_covariate, group = "tree.id")
+}
+```
 
+```{r summarize_granger_results}
+# Summarize Granger test p-values in a table (tree.id x covariate)
+extract_pval <- function(granger_result) {
+  print(head(granger_result))
+  # Each element is a list for a tree, possibly a causality object or error string
+  sapply(granger_result, function(res) {
+      res$Granger$p.value
+  })
+}
+
+tree_ids <- unique(df.ts.series2$tree.id)
+covariate_names <- vec_covariates_roll
+
+# Build p-value matrix
+pval_mat <- sapply(covariate_names, function(cov) {
+  vals <- extract_pval(granger_results[[cov]])
+  # Ensure names match tree_ids
+  vals[match(tree_ids, names(vals))]
+})
+rownames(pval_mat) <- tree_ids
+
+# Convert to data frame for easier viewing
+pval_df <- as.data.frame(pval_mat)
+pval_df$tree.id <- rownames(pval_df)
+
+# Reorder columns: tree.id first
+pval_df <- pval_df[, c("tree.id", covariate_names)]
+
+# Convert p-values to TRUE/FALSE for significance (e.g., p < 0.05)
+sig_level <- 0.05
+pval_df_tf <- pval_df
+pval_df_tf[covariate_names] <- lapply(pval_df_tf[covariate_names], function(x) !is.na(x) & x < sig_level)
+print(pval_df_tf)
+
+# Print table
+print(pval_df)
 ```
 
 ## Granger test by species
@@ -254,7 +621,6 @@ plot_coeffs <- function(my_coef_df){
     geom_errorbar(aes(ymin = estimate - std.error, ymax = estimate + std.error), width = 0.2) +
     coord_flip() +  # flip axes for readability
     labs(
-      title = "Linear Model Coefficients",
       x = "Predictor",
       y = "Estimate"
     ) +
@@ -262,16 +628,41 @@ plot_coeffs <- function(my_coef_df){
 }
 ```
 
-```{r}
+```{r regular_lm_all_species}
 lm_fit <- lm(
-  formula = twd ~ cum.time.days +  at + dp + pr + ws + sr + lr,
+  formula = as.formula(paste("twd_rolling30 ~ ", paste(x_vars, collapse = " + "))),
   data = df.ts.series2
 )
 
+x_vars <- c("at", "dp", "pr", "ws", "sr", "lr")
 summary(lm_fit)
 coef_df <- tidy(lm_fit)  # gets estimate, std.error, etc.
-plot_coeffs(coef_df)
+plot_lm_coeffs <- plot_coeffs(coef_df)
+ggsave("images for report/plot_lm_coeffs.png", plot = plot_lm_coeffs, width = 4, height = 3)
+
+x_vars_rolling7 <- c("at_rolling7", "dp_rolling7", "pr_rolling7", "ws_rolling7", "sr_rolling7", "lr_rolling7")
+lm_fit_roll7 <- lm(
+  formula = as.formula(paste("twd_rolling30 ~ ", paste(x_vars_rolling7, collapse = " + "))),
+  data = df.ts.series2
+)
+summary(lm_fit_roll7)
+coef_df <- tidy(lm_fit_roll7)  # gets estimate, std.error, etc.
+plot_lm_coeffs <- plot_coeffs(coef_df)
+ggsave("images for report/plot_lm_coeffs_rolling7.png", plot = plot_lm_coeffs, width = 4, height = 3)
+
+
+x_vars_rolling30 <- c("at_rolling30", "dp_rolling30", "pr_rolling30", "ws_rolling30", "sr_rolling30", "lr_rolling30")
+lm_fit_roll30 <- lm(
+  formula = as.formula(paste("twd_rolling30 ~ ", paste(x_vars_rolling30, collapse = " + "))),
+  data = df.ts.series2
+)
+summary(lm_fit_roll30)
+coef_df <- tidy(lm_fit_roll30)  # gets estimate, std.error, etc.
+plot_lm_coeffs <- plot_coeffs(coef_df)
+ggsave("images for report/plot_lm_coeffs_rolling30.png", plot = plot_lm_coeffs, width = 4, height = 3)
 ```  
+
+Series specific
 
 ```{r}
 lm_fit <- lm(
@@ -286,85 +677,150 @@ plot_coeffs(coef_df)
 ```  
 
 ```{r}
-lm_fit <- lm(
-  formula = twd ~ cum.time.days +  at + dp + pr + ws + sr + lr,
+# Choose a random tree index from "Picea abies"
+set.seed(36) # for reproducibility
+picea_tree_indexes <- unique(df.ts.series2$tree_index[df.ts.series2$species == "Picea abies"])
+random_picea_tree_index <- sample(picea_tree_indexes, 1)
+cat("Random tree index from Picea abies:", random_picea_tree_index, "\n")
+
+lm_fit_roll30_PiAbies <- lm(
+  formula = as.formula(paste("twd_rolling30 ~ ", paste(x_vars_rolling30, collapse = " + "))),
   data = df.ts.series2,
-  subset = species %in% c("Fagus sylvatica")
+  subset = tree_index == random_picea_tree_index
 )
 
-summary(lm_fit)
-coef_df <- tidy(lm_fit)  # gets estimate, std.error, etc.
+coef_df <- tidy(lm_fit_roll30_PiAbies) 
 plot_coeffs(coef_df)
+
+ggsave("images for report/annex/lin_reg_coeffs_pisceaabes.png", plot = plot_lm_coeffs, width = 4, height = 3)
+
+
+Fagus_tree_indexes <- unique(df.ts.series2$tree_index[df.ts.series2$species == "Fagus sylvatica"])
+random_fagus_tree_index <- sample(Fagus_tree_indexes, 1)
+cat("Random tree index from Fagus sylvatica:", random_fagus_tree_index, "\n")
+
+lm_fit_roll30_PiAbies_Fagus <- lm(
+  formula = as.formula(paste("twd_rolling30 ~ ", paste(x_vars_rolling30, collapse = " + "))),
+  data = df.ts.series2,
+  subset = tree_index == random_fagus_tree_index
+)
+
+coef_df <- tidy(lm_fit_roll30_PiAbies_Fagus)
+plot_coeffs(coef_df)
+
+ggsave("images for report/annex/lin_reg_coeffs_fagussilv.png", plot = plot_lm_coeffs, width = 4, height = 3)
+
 ```
 
+### Linear regression with autoregressive component
 
-# Rollins SD
+```{r}
+# Linear regression with autoregressive component by tree.id
 
-Confirm that timeseries are not stationary
-
-```{r fig.height =10}
-library(dplyr)
-library(purrr)
-library(ggplot2)
-library(broom)
-library(tidyr)
-library(ggplot2)
-
-# Nest data by tree.id
-nested <- df.ts.series2 %>%
-  group_by(tree.id) %>%
-  nest()
-
-# Fit model and extract residuals
-residuals_by_tree <- nested %>%
-  mutate(
-    model = map(data, ~ lm(twd ~ cum.time.days, data = .x)),
-    augmented = map(model, augment)
-  ) %>%
-  unnest(augmented)
-
-residuals_by_tree_p1 <- residuals_by_tree %>% 
-  filter(tree.id < 22)
-residuals_by_tree_p2 <- residuals_by_tree %>% 
-  filter(tree.id > 21)
-
-plot_residuals <- function(df){
-  # Plot residuals vs fitted for each tree
-  print(ggplot(df, aes(.fitted, .resid)) +
-    geom_point(alpha = 0.6) +
-    geom_hline(yintercept = 0, color = "red") +
-    facet_wrap(~ tree.id, scales = "free", ncol = 4) +
-    labs(x = "Fitted values", y = "Residuals",
-        title = "Residuals vs Fitted Values for Each Tree ID") +
-    theme_minimal())
-
-  print(ggplot(df, aes(x = cum.time.days, y = .resid)) +
-    geom_point(alpha = 0.6) +
-    geom_hline(yintercept = 0, color = "red") +
-    facet_wrap(~ tree.id, scales = "free", ncol = 4) +
-    labs(x = "Cumulative Time (days)", y = "Residuals",
-        title = "Residuals vs. Cumulative Time by Tree ID") +
-    theme_minimal())
+# Add lagged TWD columns (lags 1 to 10) for each tree
+for (lag_num in 1:10) {
+  df.ts.series2 <- df.ts.series2 %>%
+    group_by(tree.id) %>%
+    arrange(cum.time.days) %>%
+    mutate(
+      !!paste0("twd_lag", lag_num) := lag(twd, lag_num),
+      !!paste0("twd_rolling30_lag", lag_num) := lag(twd_rolling30, lag_num)) %>%
+    ungroup()
 }
 
-plot_residuals(residuals_by_tree_p1)
-plot_residuals(residuals_by_tree_p2)
-
-# Step 1: Fit a linear model for each tree
-coeffs_by_tree <- df.ts.series2 %>%
+lag_cols <- paste0("twd_lag", 1:10)
+# Fit linear model with lagged TWD for each tree
+# Fit linear model with lagged TWD for each tree and extract R-squared
+lm_ar_by_tree_model <- df.ts.series2 %>%
   group_by(tree.id) %>%
   nest() %>%
   mutate(
-    model = map(data, ~ lm(twd ~ cum.time.days, data = .x)),
-    coef = map(model, tidy)
-  ) %>%
-  unnest(coef)
+    model = map(data, ~ lm(as.formula(paste("twd ~ ", paste(x_vars, collapse = " + "), " +", paste(lag_cols, collapse = " + "))), data = .x)),
+    coef = map(model, tidy),
+    rsq = map_dbl(model, ~ summary(.x)$r.squared)
+  )
 
-# Step 2: Plot coefficients
-ggplot(coeffs_by_tree, aes(x = tree.id, y = estimate, fill = term)) +
-  geom_bar(stat = "identity", position = position_dodge()) +
-  labs(x = "Tree ID", y = "Coefficient Estimate", fill = "Term",
-       title = "Linear Model Coefficients by Tree ID") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90))
+lm_ar_by_tree <- lm_ar_by_tree_model %>%
+  unnest(coef) %>%
+  left_join(
+    df.ts.series2 %>% dplyr::select(tree.id, species) %>% distinct(),
+    by = "tree.id"
+  ) %>%
+  mutate(significant = ifelse(p.value < 0.05, "Yes", "No"))
+
+# Plot AR(1) coefficient for each tree
+ggplot(lm_ar_by_tree , aes(
+  x = term, y = estimate)) +
+  geom_jitter(aes(color = species, shape = significant), size = 2, width = 0.2, height =0) +
+  geom_boxplot(aes(group = term), alpha = 0.2, outlier.shape = NA) +
+  labs(x = "Predictor", y = "Coefficients", color = "Species", shape = "Is coefficient significant?") +
+  theme_bw() +
+  scale_color_manual(values = vec_color) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("images for report/lin_reg_ar1_coeffs_by_tree.png", width = 10, height = 5)
+```
+
+```{r}
+# Calculate mean R-squared per species
+rsq_by_species <- lm_ar_by_tree %>%
+  filter(term == "twd_lag1" ) %>%
+  group_by(species) %>%
+  dplyr::select(tree.id, species, rsq, estimate) %>%
+  unique()
+
+# Plot R-squared per species
+ggplot(rsq_by_species, aes(x = species, y = rsq, color = estimate)) +
+  geom_point(width = 0.2, alpha = 0.7, size = 2) +
+  labs(x = "Species", y = "R-squared", title = "R-squared of AR Linear Model by Species") +
+  theme_bw() +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+summary(rsq_by_species)
+```
+
+# Rollins SD
+
+Confirm that timeseries are not stationary.
+
+```{r fig.height =10}
+# Extract residuals from the model column in lm_ar_by_tree_model
+lm_ar_by_tree_model2 <- lm_ar_by_tree_model %>%
+  mutate(
+    fitted_values = map(model, fitted), 
+    residuals = map(model, residuals))
+
+# Example: view residuals for first tree
+head(lm_ar_by_tree_model2$residuals[[1]])
+
+plot_residuals <- function(df, x_col = "time_index") {
+  # Plot residuals vs fitted for each tree
+  print(ggplot(df, aes(time_index, residuals)) +
+    geom_point(alpha = 0.6) +
+    geom_hline(yintercept = 0, color = "red") +
+    facet_wrap(~ tree.id, ncol = 4) +
+    labs(x = "Cumulative Time (days)") +
+    geom_vline(xintercept = year_marks, linetype = "dotted") +
+    theme_bw()) +
+    theme(axis.title.y = element_blank())
+}
+
+list_resid_plots <- list()
+for(iter_model in 1:nrow(lm_ar_by_tree_model2)){
+  df_resid <- tibble(
+    time_index = seq( 1, length(lm_ar_by_tree_model2$residuals[[iter_model]])),
+    tree.id = lm_ar_by_tree_model2$tree.id[iter_model],
+    fitted_values = lm_ar_by_tree_model2$fitted_values[[iter_model]],
+    residuals = lm_ar_by_tree_model2$residuals[[iter_model]]
+  )
+  list_resid_plots[[iter_model]] <- plot_residuals(df_resid)
+}
+
+indexes_to_view <- c(10, 20, 30, 40)
+plots_residuals_to_show <- list_resid_plots[indexes_to_view]
+ggsave("images for report/residuals_vs_time_index.png", 
+       plot = marrangeGrob(plots_residuals_to_show, nrow=1, ncol=4), 
+       width = 10, height = 4)
+
 ```
