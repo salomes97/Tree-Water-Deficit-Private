@@ -7,11 +7,17 @@ format: pdf
 library(ggplot2)
 library(mgcv)
 library(dplyr)
+library(RColorBrewer)
 
 df.ts.series2 <- read.csv("df.ts.series2.csv") %>% 
+  mutate(tree_index = as.character(tree_index)) %>%
   filter(!species == "Pseudotsuga menziesii")
 num.cols <- c("twd", "pr", "at", "ws", "dp", "sr", "lr", "day.of.year")
+
+year_marks <- c(0, 366, 731, 1096) # 2020 is a leap year
+xlab <- "Cumulative Time (days)"
 ``` 
+
 
 ```{r}
 rolling_avg_cols <- colnames(df.ts.series2)[grep("_rolling30", colnames(df.ts.series2))]
@@ -25,23 +31,88 @@ print_time_ycol <- function(ycol){
     geom_line(aes_string(y = ycol)) +
     #geom_point(aes(color = year), size = 1)+
     facet_wrap(~species) +
+    theme_bw() +
     theme(legend.position='bottom')
 }
-``` 
+```
 
 ```{r fig.height = 6}
-lapply(rolling_avg_cols, print_time_ycol)
+
+df.ts.series2.plot <- df.ts.series2
+nb_indexes <- length(unique(df.ts.series2.plot$tree_index))
+
+vec1 <- brewer.pal(n = 12, name = "Paired")
+vec2 <- brewer.pal(n = nb_indexes-12, name = "Paired")
+vec_color <- c(vec1, vec2)
+
+bands <- read.csv("bands_seasonal.csv")
+
+get_plot_basic <-  function(my_df, my_y_col, my_y_title ){
+  plot_basic <- ggplot(my_df, aes(x = cum.time.days, color = tree_index, group = tree.id)) +
+    geom_line(aes_string(y = my_y_col)) +
+    theme_bw() +
+    theme(legend.position='none') +
+    guides(color = guide_legend(nrow = 3)) +
+    labs(
+      x = xlab, y= my_y_title,
+      color = "Tree index within each species") +
+    scale_color_manual(values = vec_color)
+}
+
+add_details  <-  function(my_plot){
+  my_plot +
+    geom_vline(xintercept = year_marks, linetype = "dotted") +
+    geom_rect(
+      data = bands,
+      aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = season),
+      inherit.aes = FALSE, alpha = 0.12
+    ) +
+    scale_fill_manual(values = c(Winter = "grey50", Summer = "goldenrod")) +
+    facet_wrap(~species, ncol = 2) 
+}
+
+plots_rolling <- lapply(rolling_avg_cols, get_plot_basic, my_df = df.ts.series2.plot, my_y_title = "30-day Rolling average TWD (mm)")
+plots_rolling2 <- lapply(plots_rolling, add_details)
+plot_time_twd_rolling_avg <- plots_rolling2[[1]]
+ggsave(
+  filename= "images for report/plot_time_twd_rolling_avg.png", 
+  plot= plot_time_twd_rolling_avg, height = 10, width = 8)
 ``` 
+
+
+```{r}
+rolling_avg_cols_7 <- colnames(df.ts.series2)[grep("_rolling7", colnames(df.ts.series2))]
+plots_rolling_7 <- lapply(rolling_avg_cols_7, get_plot_basic, my_df = df.ts.series2.plot, my_y_title = "7-day Rolling average TWD (mm)")
+plots_rolling_7 <- lapply(plots_rolling_7, add_details)
+plot_time_twd_rolling_avg_7 <- plots_rolling_7[[1]]
+ggsave(
+  filename= "images for report/plot_time_twd_rolling_avg_7.png", 
+  plot= plot_time_twd_rolling_avg_7, height = 10, width = 8)
+``` 
+
+```{r rolling_SD}
+rolling_avg_cols_SD <- colnames(df.ts.series2)[grep("_SDrolling30", colnames(df.ts.series2))]
+plots_rolling_SD <- lapply(rolling_avg_cols_SD, get_plot_basic, my_df = df.ts.series2.plot, my_y_title = "30-day Rolling SD TWD (mm)")
+plots_rolling_SD <- lapply(plots_rolling_SD, add_details)
+plot_time_twd_rolling_SD <- plots_rolling_SD[[1]]
+ggsave(
+  filename= "images for report/plot_time_twd_rolling_SD.png", 
+  plot= plot_time_twd_rolling_SD, height = 10, width = 8)
+```
 
 ```{r}
 rolling_avg_cols
-df.ts.series2$year <- factor(df.ts.series2$year)
-gam_model <- gam(twd_rolling30 ~ s(cum.time.days) +  s(pr_rolling30) + s(at_rolling30) + s(ws_rolling30) + s(dp_rolling30) + s(sr_rolling30) + s(lr_rolling30) + year + species, data = df.ts.series2)
+# s(cum.time.days)
+# Create formula for GAM in a simpler way
+predictors <- rolling_avg_cols[rolling_avg_cols != "twd_rolling30"]
+smooth_terms <- paste0("s(", predictors, ")", collapse = " + ")
+formula_str <- paste("twd_rolling30 ~", smooth_terms, "+ species")
+gam_model <- gam(as.formula(formula_str), data = df.ts.series2)
 ```
 
 #  Partial effect plots of fitted Generalized Additive Model (GAM)
 
-```{r fig.height = 10}
+```{r fig.height = 5}
 anova(gam_model)
 summary(gam_model)
 plot(gam_model, pages = 1, se = TRUE)
